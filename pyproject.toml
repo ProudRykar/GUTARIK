@@ -10,8 +10,8 @@ packages = [{include = "gutarik"}]
 
 [tool.poetry.urls]
 Repository = "https://github.com/ProudRykar/GUTARIK"
-Issues = "https://github.com/lyaguxafrog/GUTARIK/issues"
-Changelog = "https://github.com/lyaguxafrog/GUTARIK/releases"
+Issues = "https://github.com/ProudRykar/GUTARIK/issues"
+Changelog = "https://github.com/ProudRykar/GUTARIK/releases"
 
 [tool.poetry.dependencies]
 python = ">=3.10"
