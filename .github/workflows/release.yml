@@ -28,7 +28,7 @@ jobs:
           virtualenvs-in-project: true
 
       - name: Install dependencies
-        run: poetry install --with dev,docs --extras "pyyaml toml"
+        run: poetry install --with dev,docs --extras "yaml_toml" --no-interaction --no-ansi
 
       - name: Run tests
         run: poetry run pytest
