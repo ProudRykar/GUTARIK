@@ -15,6 +15,8 @@ Changelog = "https://github.com/ProudRykar/GUTARIK/releases"
 
 [tool.poetry.dependencies]
 python = ">=3.10"
+pyyaml = {version = ">=6.0.2", optional = true}
+toml = {version = "^0.10.2", optional = true}
 
 [tool.poetry.group.dev.dependencies]
 ruff = ">=0.14.0"
@@ -26,9 +28,8 @@ pytest = "^8.4.2"
 mkdocs = ">=1.6.1"
 mkdocs-material = ">=9.6.19"
 
-[project.optional-dependencies]
-pyyaml = ">=6.0.2"
-toml = "^0.10.2"
+[tool.poetry.extras]
+yaml_toml = ["pyyaml", "toml"]
 
 [tool.poetry.scripts]
 gutarik = "gutarik.generate_docs:main"
