@@ -40,7 +40,7 @@ def __yaml_config_parser__(path: str, pointer: str = GENERIC_POINTER) -> Dict[st
         Dict[str, Any]: Словарь с параметрами конфигурации.
     """
     try:
-        import yaml
+        import yaml  # type: ignore
     except ImportError:
         raise ImportError(
             "To parse YAML/YML configuration files, you need to install PyYAML: "
@@ -172,11 +172,11 @@ def __python_config_parser__(
 
     try:
         module_name = path_obj.stem
-        spec = importlib.util.spec_from_file_location(module_name, path_obj)
+        spec = importlib.util.spec_from_file_location(module_name, path_obj)  # type: ignore
         if spec is None or spec.loader is None:
             raise ValueError(f"Failed to load module from {path_obj}")
 
-        module = importlib.util.module_from_spec(spec)
+        module = importlib.util.module_from_spec(spec)  # type: ignore
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
