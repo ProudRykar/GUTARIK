@@ -192,7 +192,9 @@ def get_class_body(file_path: Path, node: ast.ClassDef) -> str:
     if min_inner is not None:
         end_line = min_inner
     else:
-        end_line = node.end_lineno if getattr(node, "end_lineno", None) else start_line + 1
+        end_line = (
+            node.end_lineno if getattr(node, "end_lineno", None) else start_line + 1
+        )
 
     body = "".join(lines[start_line:end_line]).rstrip()
     return body
@@ -253,6 +255,7 @@ def get_route_metadata(node: ast.AST) -> list[dict]:
 
     return routes
 
+
 def escape_md_pipe(s: str) -> str:
     """
     Экранирует '|' для использования внутри Markdown-таблицы.
@@ -279,7 +282,6 @@ def split_top_level(s: str, sep: str = ",") -> list[str]:
         if quote:
             buf.append(ch)
             if ch == quote:
-
                 j = i - 1
                 esc = False
                 while j >= 0 and s[j] == "\\":
@@ -369,7 +371,6 @@ def format_function_md(name: str, doc: dict[str, Any], is_method: bool = False) 
         md.append(f"#### {doc['first_line']}")
 
     if doc["rest_description"]:
-
         md.append("")
 
         rest = doc["rest_description"]
@@ -414,7 +415,9 @@ def format_function_md(name: str, doc: dict[str, Any], is_method: bool = False) 
                     raw_inside = m.group(2).strip()
                     inside_parts = split_top_level(raw_inside, ",")
                     arg_type = inside_parts[0] if inside_parts else ""
-                    flags = [p for p in (part.strip() for part in inside_parts[1:]) if p]
+                    flags = [
+                        p for p in (part.strip() for part in inside_parts[1:]) if p
+                    ]
                     if flags:
                         flags_text = ", ".join(flags)
                         if flags_text:
@@ -485,7 +488,7 @@ def write_md(file_path: Path, docstrings: dict[str, Any]) -> str:
         if cls_doc.get("first_line"):
             md_content.append(f"**{cls_doc['first_line']}**")
         if cls_doc.get("rest_description"):
-            md_content.append("") 
+            md_content.append("")
             md_content.append(cls_doc["rest_description"])
         if cls_doc.get("args"):
             md_content.extend(format_args_table_md(cls_doc["args"]))
