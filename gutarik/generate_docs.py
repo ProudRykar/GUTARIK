@@ -1,6 +1,7 @@
 """Модуль для генерации Markdown-документации."""
 # GenerateDocs
 
+import textwrap
 import argparse
 from pathlib import Path
 from typing import Any
@@ -26,16 +27,8 @@ EXCLUDE_DIRS = [Path(p) for p in config["exclude_dirs"]]
 def parse_google_docstring(docstring: str) -> dict[str, Any]:
     """Парсит Google-style докстринг в структуру словаря.
 
-    Args:
-        docstring (str): Исходный докстринг функции, метода или класса.
-
-    Returns:
-        dict: Словарь с ключами:
-            - first_line (str): Первая строка описания.
-            - rest_description (str): Основное описание.
-            - args (str): Раздел аргументов.
-            - returns (str): Раздел возвращаемых значений.
-            - raises (str): Раздел исключений.
+    Нормализует отступы (textwrap.dedent), сохраняет пустые строки и
+    возвращает отдельными секциями первую строчку и остальное описание.
     """
     if not docstring:
         return {
@@ -46,6 +39,8 @@ def parse_google_docstring(docstring: str) -> dict[str, Any]:
             "raises": "",
         }
 
+    doc = textwrap.dedent(docstring).rstrip("\n")
+
     sections: dict[str, Any] = {
         "first_line": "",
         "rest_description": [],
@@ -53,28 +48,32 @@ def parse_google_docstring(docstring: str) -> dict[str, Any]:
         "returns": [],
         "raises": [],
     }
+
     current_section = "description"
     is_first_line = True
 
-    for line in docstring.splitlines():
+    for raw_line in doc.splitlines():
+        line = raw_line.rstrip()
         line_strip = line.strip()
+
         if re.match(r"^(Args|Attributes):", line_strip):
             current_section = "args"
+            continue
         elif re.match(r"^Returns:", line_strip):
             current_section = "returns"
+            continue
         elif re.match(r"^(Raises|Exceptions):", line_strip):
             current_section = "raises"
-        else:
-            if current_section == "description":
-                if is_first_line and line_strip:
-                    sections["first_line"] = line_strip
-                    is_first_line = False
-                else:
-                    if isinstance(sections["rest_description"], list):
-                        sections["rest_description"].append(line)
+            continue
+
+        if current_section == "description":
+            if is_first_line and line_strip:
+                sections["first_line"] = line_strip
+                is_first_line = False
             else:
-                if isinstance(sections[current_section], list):
-                    sections[current_section].append(line)
+                sections["rest_description"].append(line)
+        else:
+            sections[current_section].append(line)
 
     for key in sections:
         if key == "first_line":
@@ -109,15 +108,18 @@ def extract_docstrings(file_path: Path) -> dict[Any, Any]:
                 ast.get_docstring(node) or ""
             )
             class_doc["methods"] = {}
+            class_doc["body"] = get_class_body(file_path, node)
             for cnode in node.body:
                 if isinstance(cnode, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     method_doc = parse_google_docstring(ast.get_docstring(cnode) or "")
                     method_doc["body"] = get_function_body(file_path, cnode)
+                    method_doc["routes"] = get_route_metadata(cnode)
                     class_doc["methods"][cnode.name] = method_doc
             docstrings["classes"][node.name] = class_doc
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             func_doc = parse_google_docstring(ast.get_docstring(node) or "")
             func_doc["body"] = get_function_body(file_path, node)
+            func_doc["routes"] = get_route_metadata(node)
             docstrings.setdefault("functions", {})[node.name] = func_doc
 
     return docstrings
@@ -159,6 +161,194 @@ def get_function_body(
     return body
 
 
+def get_class_body(file_path: Path, node: ast.ClassDef) -> str:
+    """
+    Извлекает верхнюю часть класса (декораторы, сигнатуру, поля и т.п.)
+    до первой функции/декоратора внутри тела класса.
+
+    Возвращает текст среза исходного файла (без последующих методов).
+    """
+    with open(file_path, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    start_line = node.lineno - 1
+    if hasattr(node, "decorator_list") and node.decorator_list:
+        decorator_start = min(dec.lineno - 1 for dec in node.decorator_list)
+        start_line = decorator_start
+        while start_line > 0 and lines[start_line - 1].strip().startswith("@"):
+            start_line -= 1
+
+    min_inner: int | None = None
+    for cnode in node.body:
+        if isinstance(cnode, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if getattr(cnode, "decorator_list", None):
+                dec_start = min(dec.lineno - 1 for dec in cnode.decorator_list)
+                candidate = dec_start
+            else:
+                candidate = cnode.lineno - 1
+            if min_inner is None or candidate < min_inner:
+                min_inner = candidate
+
+    if min_inner is not None:
+        end_line = min_inner
+    else:
+        end_line = node.end_lineno if getattr(node, "end_lineno", None) else start_line + 1
+
+    body = "".join(lines[start_line:end_line]).rstrip()
+    return body
+
+
+def get_route_metadata(node: ast.AST) -> list[dict]:
+    """
+    Извлекает структурированную информацию из HTTP-декораторов.
+    Возвращает список словарей с метаданными маршрута.
+    """
+    routes: list[dict] = []
+
+    for dec in getattr(node, "decorator_list", []) or []:
+        if not isinstance(dec, ast.Call):
+            continue
+
+        if isinstance(dec.func, ast.Name):
+            method = dec.func.id
+        elif isinstance(dec.func, ast.Attribute):
+            method = dec.func.attr
+        else:
+            continue
+
+        route_info = {
+            "method": method,
+            "path": None,
+            "summary": None,
+            "description": None,
+            "tags": [],
+            "status_code": None,
+        }
+
+        if dec.args:
+            try:
+                route_info["path"] = ast.literal_eval(dec.args[0])
+            except Exception:
+                pass
+
+        for kw in dec.keywords:
+            try:
+                value = ast.literal_eval(kw.value)
+            except Exception:
+                continue
+
+            if kw.arg == "summary":
+                route_info["summary"] = value
+            elif kw.arg == "description":
+                route_info["description"] = value
+            elif kw.arg == "tags":
+                route_info["tags"] = value
+            elif kw.arg == "status_code":
+                route_info["status_code"] = value
+
+        if route_info["status_code"] is None:
+            route_info["status_code"] = 0
+
+        routes.append(route_info)
+
+    return routes
+
+def escape_md_pipe(s: str) -> str:
+    """
+    Экранирует '|' для использования внутри Markdown-таблицы.
+    Используем HTML-entity, т.к. она стабильно безопасно проходит через разные рендереры.
+    """
+    return s.replace("|", r"\|")
+
+
+def split_top_level(s: str, sep: str = ",") -> list[str]:
+    """
+    Разбивает строку `s` по разделителю `sep`, но только те разделители,
+    которые находятся на верхнем уровне (не внутри скобок или кавычек).
+
+    Пример:
+    split_top_level('Literal[\"a\", \"b\"], optional') -> ['Literal["a", "b"]', ' optional']
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    stack: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+
+                j = i - 1
+                esc = False
+                while j >= 0 and s[j] == "\\":
+                    esc = not esc
+                    j -= 1
+                if not esc:
+                    quote = None
+        else:
+            if ch in ("'", '"'):
+                quote = ch
+                buf.append(ch)
+            elif ch in "([{":
+                stack.append(ch)
+                buf.append(ch)
+            elif ch in ")]}":
+                if stack:
+                    stack.pop()
+                buf.append(ch)
+            elif ch == sep and not stack and not quote:
+                parts.append("".join(buf))
+                buf = []
+            else:
+                buf.append(ch)
+        i += 1
+    if buf:
+        parts.append("".join(buf))
+    return [p for p in (p.strip() for p in parts) if p != ""]
+
+
+def format_args_table_md(args_str: str) -> list[str]:
+    md_lines: list[str] = []
+    if not args_str or not args_str.strip():
+        return md_lines
+
+    md_lines.append("\n#### Аргументы")
+    md_lines.append("| Аргумент | Тип | Описание |")
+    md_lines.append("|----------|-----|----------|")
+
+    for arg in args_str.split("\n"):
+        if not arg.strip():
+            continue
+        parts = arg.strip().split(":", 1)
+        if len(parts) == 2:
+            name_type = parts[0].strip()
+            desc = parts[1].strip()
+
+            m = re.match(r"^([^\(]+)\s*\((.+)\)$", name_type)
+            if m:
+                arg_name = m.group(1).strip()
+                raw_inside = m.group(2).strip()
+                inside_parts = split_top_level(raw_inside, ",")
+                arg_type = inside_parts[0] if inside_parts else ""
+                flags = [p for p in (part.strip() for part in inside_parts[1:]) if p]
+                if flags:
+                    flags_text = ", ".join(flags)
+                    if flags_text:
+                        desc = f"{desc} ({flags_text})"
+            else:
+                arg_name = name_type
+                arg_type = ""
+
+            arg_type = escape_md_pipe(arg_type)
+            md_lines.append(f"| `{arg_name}` | `{arg_type}` | {desc} |")
+        else:
+            md_lines.append(f"| `{arg.strip()}` | | |")
+
+    return md_lines
+
+
 def format_function_md(name: str, doc: dict[str, Any], is_method: bool = False) -> str:
     """Форматирует функцию или метод в Markdown с таблицами аргументов, возвращаемых значений и исключений.
 
@@ -179,46 +369,64 @@ def format_function_md(name: str, doc: dict[str, Any], is_method: bool = False) 
         md.append(f"#### {doc['first_line']}")
 
     if doc["rest_description"]:
-        md.append(doc["rest_description"])
 
-    # HTTP route
-    if "@" in doc["body"]:
-        route_lines: list[str] = []
-        current_route: list[str] = []
-        for line in doc["body"].splitlines():
-            line_strip = line.strip()
-            if line_strip.startswith(("@get", "@post", "@put", "@delete")) or (
-                current_route and line_strip
-            ):
-                current_route.append(line_strip)
-                if line_strip.endswith(")"):
-                    route_lines.append(" ".join(current_route))
-                    current_route = []
-        if route_lines:
-            md.append("#### Маршруты:")
-            for route in route_lines:
-                md.append(f"- `{route}`")
+        md.append("")
+
+        rest = doc["rest_description"]
+        rest = re.sub(r"(?m)^[\t ]*•[\t ]*", "- ", rest)
+        rest = re.sub(r"(?m)^[\t ]*-\s*", "- ", rest)
+        md.append(rest)
+
+    routes = doc.get("routes") or []
+    if routes:
+        md.append("#### Маршрут:")
+        for route in routes:
+            md.append(f"- **Декоратор:** @{route['method']}")
+            if route["path"]:
+                md.append(f"- **Маршрут:** `{route['path']}`")
+            if route["summary"]:
+                md.append(f"- **Заголовок:** {route['summary']}")
+            if route["description"]:
+                md.append(f"- **Описание:** {route['description']}")
+            if route["tags"]:
+                md.append(f"- **Теги:** {', '.join(route['tags'])}")
+            if route["status_code"]:
+                md.append(f"- **Код ответа:** {route['status_code']}")
+            md.append("")
 
     # Аргументы
     if doc["args"]:
         md.append("\n#### Аргументы")
         md.append("| Аргумент | Тип | Описание |")
         md.append("|----------|-----|----------|")
+
         for arg in doc["args"].split("\n"):
-            if arg.strip():
-                parts = arg.strip().split(":", 1)
-                if len(parts) == 2:
-                    name_type = parts[0].strip()
-                    desc = parts[1].strip()
-                    if "(" in name_type and ")" in name_type:
-                        arg_name = name_type.split("(")[0].strip()
-                        arg_type = name_type.split("(")[1].replace(")", "").strip()
-                    else:
-                        arg_name = name_type
-                        arg_type = ""
-                    md.append(f"| `{arg_name}` | `{arg_type}` | {desc} |")
+            if not arg.strip():
+                continue
+            parts = arg.strip().split(":", 1)
+            if len(parts) == 2:
+                name_type = parts[0].strip()
+                desc = parts[1].strip()
+
+                m = re.match(r"^([^\(]+)\s*\((.+)\)$", name_type)
+                if m:
+                    arg_name = m.group(1).strip()
+                    raw_inside = m.group(2).strip()
+                    inside_parts = split_top_level(raw_inside, ",")
+                    arg_type = inside_parts[0] if inside_parts else ""
+                    flags = [p for p in (part.strip() for part in inside_parts[1:]) if p]
+                    if flags:
+                        flags_text = ", ".join(flags)
+                        if flags_text:
+                            desc = f"{desc} ({flags_text})"
                 else:
-                    md.append(f"| `{arg.strip()}` | | |")
+                    arg_name = name_type
+                    arg_type = ""
+
+                arg_type = escape_md_pipe(arg_type)
+                md.append(f"| `{arg_name}` | `{arg_type}` | {desc} |")
+            else:
+                md.append(f"| `{arg.strip()}` | | |")
 
     # Возвращаемое значение
     if doc["returns"] and doc["returns"].strip().lower() != "none":
@@ -277,18 +485,16 @@ def write_md(file_path: Path, docstrings: dict[str, Any]) -> str:
         if cls_doc.get("first_line"):
             md_content.append(f"**{cls_doc['first_line']}**")
         if cls_doc.get("rest_description"):
+            md_content.append("") 
             md_content.append(cls_doc["rest_description"])
         if cls_doc.get("args"):
-            md_content.append("\n**Args:**")
-            for arg in cls_doc["args"].split("\n"):
-                if arg.strip():
-                    parts = arg.strip().split(":", 1)
-                    if len(parts) == 2:
-                        arg_name_type = parts[0].strip()
-                        arg_desc = parts[1].strip()
-                        md_content.append(f"- `{arg_name_type}`: {arg_desc}")
-                    else:
-                        md_content.append(f"- `{arg.strip()}`")
+            md_content.extend(format_args_table_md(cls_doc["args"]))
+
+        if cls_doc.get("body"):
+            md_content.append("\n```python")
+            md_content.append(cls_doc["body"])
+            md_content.append("```")
+
         if cls_doc.get("methods"):
             md_content.append("\n---")
         for method_name, method_doc in cls_doc.get("methods", {}).items():
@@ -313,7 +519,6 @@ def create_docs(src_dirs: list[Path], dst_dir: Path, exclude_dirs: list[Path]) -
     """
     for src_dir in src_dirs:
         for root, dirs, files in os.walk(src_dir):
-            # Пропускаем исключённые директории
             dirs[:] = [d for d in dirs if Path(root) / d not in exclude_dirs]
             rel_path = Path(root).relative_to(src_dir)
             target_dir = dst_dir / rel_path

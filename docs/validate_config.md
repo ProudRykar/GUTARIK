@@ -143,7 +143,7 @@ def validate_wiki_repo(url: str) -> None:
 | Аргумент | Тип | Описание |
 |----------|-----|----------|
 | `config` | `dict` | Конфигурационный словарь. |
-| `config_path` | `str | Path, optional` | Путь к конфигурационному файлу. Defaults to None. |
+| `config_path` | `str \| Path` | Путь к конфигурационному файлу. Defaults to None. (optional) |
 
 ```python
 def validate_config(config: dict, config_path: Optional[str | Path] = None) -> None:

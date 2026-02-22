@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gutarik"
-version = "0.1.0"
+version = "0.1.1"
 description = "Auto .md docs generator"
 authors = ["ProudRykar <proudrykar@mail.ru>"]
 license = "MIT"
